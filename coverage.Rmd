@@ -30,6 +30,7 @@ library(GenomicAlignments)
 library(GenomicFeatures)
 library(Gviz)
 library(biomaRt)
+library(parallel)
 ```
 
 ## Load configuration file
@@ -46,9 +47,6 @@ selectedChrom = config$region$chr
 selectedStart = config$region$start
 selectedEnd = config$region$end
 selectedStrand = config$region$strand
-
-# selected relevant chromosome in TxDb object
-seqlevels(txdb) = selectedChrom
 ```
 
 # Create the different tracks for ploting
@@ -65,62 +63,79 @@ Here I construct the Gene Region Track manually. Can also be done using a TxDb o
 gtf = rtracklayer::import.gff(config$annotations$gtf)
 
 # range of interest
-interval2keep = GRanges(seqnames = selectedChrom,IRanges(selectedStart,selectedEnd),strand = config$region$strand)
+#interval2keep = GRanges(seqnames = selectedChrom,IRanges(selectedStart,selectedEnd),strand = config$region$strand)
 
-# get final dataframe to construct GeneRegionTrack
-df = as.data.frame(df = subsetByOverlaps(query = interval2keep,subject = gtf))
+# subset GRanges gtf object using selected start and end positions
+df =  gtf[seqnames(gtf)==selectedChrom]
+df = df[start(df) >= selectedStart]
+df = df[end(df) <= selectedEnd]
 
-# replace some column names to match GeneRegionTrack function arguments
-names(df)[names(df) == "type"] <- "feature"
-names(df)[names(df) == "seqnames"] <- "chromosome"
-
+# keep only protein coding features
+#df = df[elementMetadata(df)$transcript_biotype == "protein_coding"]
+  
 # add gene symbol for plotting
-genes = cbind.data.frame(gene_id = config$genes$solycids,symbol = config$genes$symbol)
-df = dplyr::left_join(df,genes,by="gene_id")
-
-# keep only columns of interest
-df = df[c("chromosome","start","end","strand","feature","symbol")]
+#genes = cbind.data.frame(gene_id = config$genes$solycids,symbol = config$genes$symbol)
+#df = dplyr::left_join(df,genes,by="gene_id")
 
 # creates the GeneRegionTrack
-txTrack = GeneRegionTrack(df,feature = df$feature,symbol = df$symbol,name = "Transcripts",background.title="cadetblue3",shape=c("smallArrow"),thinBoxFeature=c("utr", "ncRNA", "utr3", "utr5", "miRNA", "lincRNA"),stacking = "hide")
+txTrack = GeneRegionTrack(
+  df,
+  feature = df$type,
+  symbol = df$transcript_id,
+  name = "Gene Annotation",
+  background.title="cadetblue3",
+  shape=c("smallArrow"),
+  strand=df$strand,
+  stacking = "dense",
+  showId = TRUE,
+  options(ucscChromosomeNames=FALSE),
+  genome=selectedGenome
+  )
+```
+
+## Build Data Tracks that contain coverage values for range of interest
+```{r}
+# # directory for result files
+# bamdir = config$bamdir
+# 
+# # List bedgraph files
+# bedgraphFiles = sapply(list.files(config$bamdir,pattern = ".bedgraph$"),FUN = function(x) {file.path(bamdir,x)})
+# bedgraphsNames = sapply(names(bedgraphFiles),FUN = function(x){strsplit(x,split = "\\.")[[1]][[1]]})
+# bedgraphFiles = lapply(bedgraphFiles,function(x){read.delim(x,header = F,col.names = c("chromosome","start","end","cov"))})
+# 
+# # build Data Tracks
+# BedTracks = lapply(bedgraphFiles,function(x){DataTrack(x,ctype="l",genome = selectedGenome)}) 
 ```
 
 ## Build Alignment Tracks from BAM files
 ```{r build alignment tracks}
 # list all bam files of interest
 bamdir = config$bamdir
-bamsFiles = sapply(list.files(config$bamdir,pattern = ".bam$"),FUN = function(x) {file.path(bamdir,x)})
+bamFiles = sapply(list.files(config$bamdir,pattern = ".bam$"),FUN = function(x) {file.path(bamdir,x)})
 
-# read BAM files
-bamFiles = BamFileList(bamsFiles)
+# read BAM files and get their names
+bamFiles = BamFileList(bamFiles)
+bamFilesNames = lapply(bamFiles,
+                       FUN = function(x){
+                         strsplit(basename(path(x)),split = "\\.")[[1]][[1]]
+                         })
 
 # read alignments and store them in GRanges objects
-readAlns = list()
-readAlnsGRanges = list()
-for (i in seq_along(bamFiles)){
-  # read alignments and store them in a GAlignments object 
-  readAlns[[i]] = readGAlignmentPairs(bamFiles[[i]],use.names = T,)
-  # convert to GRanges object
-  readAlnsGRanges[[i]] = granges(readAlns[[i]],use.names = T,use.mcols = T)
-}
+readGAs = lapply(bamFiles,FUN = function(x) {readGAlignmentPairs(x,use.names = T)})
 
-# get names of bam files
+# load GAalignmentsPairs and convert to GRanges
+readGRs = lapply(readGAs,FUN = function(x){granges(x,use.names = T,use.mcols = T)})
+
 # creates AlignmentTracks
-for (i in seq_along(bamFiles)){
-  bamFilesNames[[i]] = strsplit(x = names(bamFiles),split = "\\.")[[i]][[1]]
-}
-bamAlnTracks = list()
-for (i in seq_along(readAlnsGRanges)){
-  bamAlnTracks[[i]] = AlignedReadTrack(readAlnsGRanges[[i]],start = selectedStart,end = selectedEnd,chromosome = selectedChrom,genome = selectedGenome)
-  names(bamAlnTracks[[i]]) = bamFilesNames[[i]]
-  }
+bamAlnTracks = lapply(readGRs,function(x){AlignedReadTrack(x,start = selectedStart,end = selectedEnd,chromosome = selectedChrom,genome = selectedGenome)})
+names(bamAlnTracks) = bamFilesNames
 ```
 
 # Merge all tracks and plot
-
 ```{r merge tracks}
+# build track list and plot
 trackList = append(x = list(axisTrack,txTrack),values = bamAlnTracks)
-plotTracks(trackList,from = selectedStart,to = selectedEnd,transcriptAnnotation=c("symbol"))
+plotTracks(trackList,from = selectedStart,to = selectedEnd,transcriptAnnotation=c("symbol"),type="coverage")
 
 # save to file
 png(filename = "plot.png",width = 10,height = 6,res = 400,pointsize = 8)
@@ -166,36 +181,36 @@ plotTracks(list(my_ideoTrack,gx),from = 1,to = 15)
 sessionInfo()
 ```
 
-# not used but kept
+# not used but kept for documentation
 ```{r backup}
-ideoTrack <- IdeogramTrack(genome = "hg38",chromosome = "chr22")
-
-# set your own
-my_ideoTrack <- ideoTrack
-
-# RANGE
-START=seq(1,100,10)
-END=seq(10,100,10)
-RANGES <- GRanges(seqnames = c(letters[1:10]),IRanges(start =START ,end =END))
-
-# arbitrary Giemsa staining
-GS <- c("gneg", "gpos100",  "gpos25","acen",  "gpos50",  "gpos75",    "gvar",   "stalk" ,NA,NA)
-bt <- data.frame(chrom="own1",chromStart= seq(1,100,10),chromEnd=seq(10,100,10),name=letters[1:10],gieStain=GS)
-
-# chromosome name
-CHR <- "own1"
-
-# Replace with your own data
-my_ideoTrack@range <- RANGES
-my_ideoTrack@chromosome <- CHR
-my_ideoTrack@name <- CHR
-my_ideoTrack@bandTable <- bt
-
-# set UCSC chromosome Names False
-options(ucscChromosomeNames=FALSE)
-gx <- GenomeAxisTrack()
-# Plot
-plotTracks(list(my_ideoTrack,gx),from = 1,to = 15)
+# ideoTrack <- IdeogramTrack(genome = "hg38",chromosome = "chr22")
+# 
+# # set your own
+# my_ideoTrack <- ideoTrack
+# 
+# # RANGE
+# START=seq(1,100,10)
+# END=seq(10,100,10)
+# RANGES <- GRanges(seqnames = c(letters[1:10]),IRanges(start =START ,end =END))
+# 
+# # arbitrary Giemsa staining
+# GS <- c("gneg", "gpos100",  "gpos25","acen",  "gpos50",  "gpos75",    "gvar",   "stalk" ,NA,NA)
+# bt <- data.frame(chrom="own1",chromStart= seq(1,100,10),chromEnd=seq(10,100,10),name=letters[1:10],gieStain=GS)
+# 
+# # chromosome name
+# CHR <- "own1"
+# 
+# # Replace with your own data
+# my_ideoTrack@range <- RANGES
+# my_ideoTrack@chromosome <- CHR
+# my_ideoTrack@name <- CHR
+# my_ideoTrack@bandTable <- bt
+# 
+# # set UCSC chromosome Names False
+# options(ucscChromosomeNames=FALSE)
+# gx <- GenomeAxisTrack()
+# # Plot
+# plotTracks(list(my_ideoTrack,gx),from = 1,to = 15)
 ```
 
 ## Create a TxDb object
@@ -205,7 +220,7 @@ The TxDB object (GenomicFeatures package) is used to store genome annotation inf
 #txdb = makeTxDbFromGFF(file = config$annotations$gff,format = "gff3",dataSource = config$annotations$gffSource,organism = "Solanum lycopersicum")
 ````
 
-
+## Use biomaRt to retrieve information
 ```{r biomart}
 # # list available datasets from ensembl plants
 # head(listDatasets(useMart("plants_mart",host="plants.ensembl.org")),20)
