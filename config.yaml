@@ -1,0 +1,23 @@
+---
+# reference annotations
+annotations:
+  gff: "../../data/Solanum_lycopersicum.SL2.50.32.chr.gff3"
+  gffSource: "downloaded from ftp.ensemblgenomes.org release v32"
+  gtf: "../../data/Solanum_lycopersicum.SL2.50.32.chr.gtf"
+
+# specify coordinates for region of interest
+region:
+  genome: tomato
+  chr: SL2.50ch01
+  start: 2711773
+  end: 2733552
+  strand: -
+  
+# specify genes of interest with symbols 
+# the two lists must have the same length (put NA if no symbol available)
+genes:
+  solycids: ["Solyc01g008650.2","Solyc01g008660.2","Solyc01g008670.2"]
+  symbol: ["CYP71D185","F-box protein","CYP71D184"]
+  
+# directory where BAM files can be found
+bamdir: "../../results/20160812_P450_chr1_7accessions/results"
